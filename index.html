@@ -656,20 +656,20 @@
 
   <!-- Savings KPIs -->
   <div class="savings-row">
-    <div class="sav-card">
+    <div class="sav-card" onclick="editInvestment('sip')" style="cursor:pointer">
       <div class="sav-icon">📈</div>
-      <div class="sav-label">Daily SIP</div>
-      <div class="sav-val" style="color: var(--accent)">₹3,000</div>
+      <div class="sav-label">Daily SIP <span style="font-size:8px;opacity:0.5">✏️</span></div>
+      <div class="sav-val" style="color: var(--accent)" id="sipDisplay">₹3,000</div>
     </div>
-    <div class="sav-card">
+    <div class="sav-card" onclick="editInvestment('gold')" style="cursor:pointer">
       <div class="sav-icon">🥇</div>
-      <div class="sav-label">Gold + MF</div>
-      <div class="sav-val" style="color: var(--accent)">₹12,000</div>
+      <div class="sav-label">Gold + MF <span style="font-size:8px;opacity:0.5">✏️</span></div>
+      <div class="sav-val" style="color: var(--accent)" id="goldDisplay">₹12,000</div>
     </div>
     <div class="sav-card">
       <div class="sav-icon">💼</div>
       <div class="sav-label">Total Commit</div>
-      <div class="sav-val" style="color: var(--accent3)">₹15,000</div>
+      <div class="sav-val" style="color: var(--accent3)" id="commitDisplay">₹15,000</div>
     </div>
   </div>
 
@@ -831,6 +831,7 @@ const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 let state = {
   transactions: [],
   balances: { sc: 0, sbi: 0, hdfc: 0, dbs: 0, union: 0 },
+  investments: { sip: 3000, gold: 12000 },
   selectedMonth: new Date().getMonth(),
   selectedYear: new Date().getFullYear(),
   activeFilter: 'all'
@@ -844,6 +845,7 @@ function loadState() {
       const parsed = JSON.parse(saved);
       state.transactions = parsed.transactions || [];
       state.balances = parsed.balances || state.balances;
+      state.investments = parsed.investments || state.investments;
     }
   } catch(e) {}
 }
@@ -852,7 +854,8 @@ function saveState() {
   try {
     localStorage.setItem('moneyCommanderState', JSON.stringify({
       transactions: state.transactions,
-      balances: state.balances
+      balances: state.balances,
+      investments: state.investments
     }));
   } catch(e) {}
 }
@@ -932,7 +935,7 @@ function renderSummary() {
   const txns = getCurrentMonthTxns();
   const income = txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
   const spent = txns.filter(t=>t.type==='expense' && t.category!=='investment').reduce((s,t)=>s+t.amount,0);
-  const invested = txns.filter(t=>t.category==='investment').reduce((s,t)=>s+t.amount,0) + 15000;
+  const invested = txns.filter(t=>t.category==='investment').reduce((s,t)=>s+t.amount,0) + state.investments.sip + state.investments.gold;
   const left = income - spent - invested;
 
   document.getElementById('totalIncome').textContent = fmt(income);
@@ -1076,10 +1079,31 @@ function setFilter(f, btn) {
   renderTransactions();
 }
 
+function renderInvestments() {
+  const sip = state.investments.sip;
+  const gold = state.investments.gold;
+  const total = sip + gold;
+  document.getElementById('sipDisplay').textContent = fmt(sip);
+  document.getElementById('goldDisplay').textContent = fmt(gold);
+  document.getElementById('commitDisplay').textContent = fmt(total);
+}
+
+function editInvestment(type) {
+  const label = type === 'sip' ? 'Daily SIP monthly amount (₹)' : 'Gold + MF monthly amount (₹)';
+  const current = state.investments[type];
+  const val = prompt(label, current);
+  if (val !== null && !isNaN(val) && parseFloat(val) >= 0) {
+    state.investments[type] = parseFloat(val);
+    saveState();
+    renderAll();
+  }
+}
+
 function renderAll() {
   renderMonthNav();
   renderAccounts();
   renderSummary();
+  renderInvestments();
   renderBreakdown();
   renderTransactions();
 }
