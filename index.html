@@ -421,9 +421,16 @@ const CAT_LABELS = {
 const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 // ─── STATE ───────────────────────────────────────────────────
+const TODAY = new Date().toISOString().split('T')[0];
 let state = {
   transactions: [],
-  balances: {sc:0,sbi:0,hdfc:0,dbs:0,union:0},
+  snapshots: {
+    sc:   {amount:0,asOf:TODAY},
+    sbi:  {amount:0,asOf:TODAY},
+    hdfc: {amount:0,asOf:TODAY},
+    dbs:  {amount:0,asOf:TODAY},
+    union:{amount:0,asOf:TODAY}
+  },
   instruments: JSON.parse(JSON.stringify(DEFAULT_INSTRUMENTS)),
   selectedMonth: new Date().getMonth(),
   selectedYear:  new Date().getFullYear(),
@@ -438,7 +445,17 @@ function loadState() {
     if (!s) return;
     const p = JSON.parse(s);
     state.transactions = p.transactions || [];
-    state.balances     = p.balances     || state.balances;
+    // Load snapshots; fall back to old balances format gracefully
+    if (p.snapshots) {
+      Object.keys(state.snapshots).forEach(k=>{
+        if(p.snapshots[k]) state.snapshots[k] = p.snapshots[k];
+      });
+    } else if (p.balances) {
+      // Migrate old plain balances — treat them as snapshots as of today
+      Object.keys(state.snapshots).forEach(k=>{
+        if(p.balances[k]!=null) state.snapshots[k] = {amount:p.balances[k], asOf:TODAY};
+      });
+    }
     if (p.instruments && p.instruments.length) {
       // Merge saved entries into defaults; keep custom instruments
       const defaults = JSON.parse(JSON.stringify(DEFAULT_INSTRUMENTS));
@@ -459,7 +476,7 @@ function saveState() {
   try {
     localStorage.setItem('mcV3', JSON.stringify({
       transactions: state.transactions,
-      balances:     state.balances,
+      snapshots:    state.snapshots,
       instruments:  state.instruments.map(i=>({id:i.id,name:i.name,type:i.type,freq:i.freq,color:i.color,entries:i.entries}))
     }));
   } catch(e){}
@@ -468,6 +485,15 @@ function saveState() {
 // ─── HELPERS ─────────────────────────────────────────────────
 function fmt(n){return '₹'+Math.abs(n).toLocaleString('en-IN');}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+
+// Balance = snapshot amount + transactions strictly AFTER the asOf date
+function computedBalance(accKey){
+  const snap = state.snapshots[accKey] || {amount:0, asOf:TODAY};
+  const delta = state.transactions
+    .filter(t => t.account===accKey && t.date > snap.asOf)
+    .reduce((s,t) => t.type==='income' ? s+t.amount : s-t.amount, 0);
+  return snap.amount + delta;
+}
 function getCurrentMonthTxns(){
   return state.transactions.filter(t=>{
     const d=new Date(t.date);
@@ -497,7 +523,6 @@ function saveInlineEntry(instId){
   const inst = state.instruments.find(i=>i.id===instId);
   if (!inst) return;
   inst.entries.push({id:uid(), amount:amt, date, note, account:acc});
-  state.balances[acc] = (state.balances[acc]||0) - amt;
   state.activeEntryForm = null;
   saveState(); renderAll();
 }
@@ -505,8 +530,6 @@ function saveInlineEntry(instId){
 function deleteEntry(instId, entryId){
   const inst = state.instruments.find(i=>i.id===instId);
   if (!inst) return;
-  const entry = inst.entries.find(e=>e.id===entryId);
-  if (entry) state.balances[entry.account] = (state.balances[entry.account]||0) + entry.amount;
   inst.entries = inst.entries.filter(e=>e.id!==entryId);
   saveState(); renderAll();
 }
@@ -674,10 +697,13 @@ function renderMonthNav(){
 function renderAccounts(){
   const grid=document.getElementById('accountsGrid');
   const txns=getCurrentMonthTxns();
-  const totalBal=Object.values(state.balances).reduce((a,b)=>a+b,0);
+  const allBals = Object.keys(ACCOUNTS).map(k=>computedBalance(k));
+  const totalBal = allBals.reduce((a,b)=>a+b,0);
   grid.innerHTML='';
   Object.entries(ACCOUNTS).forEach(([key,acc])=>{
-    const bal=state.balances[key]||0;
+    const bal = computedBalance(key);
+    const snap = state.snapshots[key] || {amount:0,asOf:TODAY};
+    const asOfFmt = (()=>{const d=new Date(snap.asOf);return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;})();
     const spent=txns.filter(t=>t.account===key&&t.type==='expense').reduce((s,t)=>s+t.amount,0);
     const income=txns.filter(t=>t.account===key&&t.type==='income').reduce((s,t)=>s+t.amount,0);
     const pct=totalBal>0?Math.round((bal/totalBal)*100):0;
@@ -686,6 +712,7 @@ function renderAccounts(){
     card.innerHTML=`
       <div class="acc-header"><div class="acc-name">${acc.name}</div><div class="acc-role">${acc.role}</div></div>
       <div class="acc-balance">${fmt(bal)}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--muted2);margin-bottom:6px;">as of ${asOfFmt}</div>
       <div class="acc-bar-wrap"><div class="acc-bar ${key}" style="width:${Math.min(pct,100)}%"></div></div>
       <div class="acc-stats">
         <div>Out: <span style="color:var(--accent2)">${fmt(spent)}</span></div>
@@ -693,8 +720,13 @@ function renderAccounts(){
         <div>${pct}%</div>
       </div>`;
     card.onclick=()=>{
-      const v=prompt(`${acc.name} current balance (₹)?`,bal);
-      if(v!==null&&!isNaN(v)){state.balances[key]=parseFloat(v);saveState();renderAll();}
+      const v = prompt(`${acc.name}\nEnter balance (₹):`, snap.amount);
+      if (v===null||isNaN(v)) return;
+      const d = prompt(`As of date (YYYY-MM-DD):`, snap.asOf);
+      if (d===null) return;
+      const dateVal = d.trim()||snap.asOf;
+      state.snapshots[key] = {amount:parseFloat(v), asOf:dateVal};
+      saveState(); renderAll();
     };
     grid.appendChild(card);
   });
@@ -787,8 +819,6 @@ function addTransaction(){
     warn.textContent=`⚠ ${cat} spending (${fmt(catTotal+amt)}) is ${catTotal+amt>limit?'OVER':'near'} ₹${limit.toLocaleString('en-IN')} limit!`;
     setTimeout(()=>warn.style.display='none',4000);
   } else warn.style.display='none';
-  if(type==='expense') state.balances[acc]=(state.balances[acc]||0)-amt;
-  if(type==='income')  state.balances[acc]=(state.balances[acc]||0)+amt;
   state.transactions.push({id:uid(),desc,amount:amt,category:cat,account:acc,type,date});
   saveState();renderAll();
   document.getElementById('txnDesc').value='';
@@ -796,11 +826,6 @@ function addTransaction(){
 }
 
 function deleteTxn(id){
-  const t=state.transactions.find(x=>x.id===id);
-  if(t){
-    if(t.type==='expense') state.balances[t.account]=(state.balances[t.account]||0)+t.amount;
-    if(t.type==='income')  state.balances[t.account]=(state.balances[t.account]||0)-t.amount;
-  }
   state.transactions=state.transactions.filter(x=>x.id!==id);
   saveState();renderAll();
 }
